@@ -13,7 +13,7 @@ struct ContentView: View {
     
     @Environment(AudioManager.self) var audioManager
     @Environment(\.colorScheme) var colorScheme
-
+    
     @State private var isListVisible = false
     @State private var showFileImporter = false
     
@@ -35,11 +35,11 @@ struct ContentView: View {
     @State private var renameText = ""
     @State private var targetTrackIndex: Int? = nil
     @FocusState private var isRenamingFieldFocused: Bool
-
+    
     
     // --- HINT STATE ---
     @State private var showHint = true
-
+    
     // Animation States
     @State private var dragOffset: CGFloat = 0
     // Neighbors
@@ -54,7 +54,7 @@ struct ContentView: View {
                         .transition(.opacity)
                 } else {
                     mainInterface
-                        // Apply drag gesture only to main interface to avoid conflicts
+                    // Apply drag gesture only to main interface to avoid conflicts
                         .gesture(dragGesture(geo: geo))
                         .transition(.opacity.combined(with: .scale(scale: 0.95)))
                 }
@@ -81,29 +81,37 @@ struct ContentView: View {
                     }
                 }
             }
-//            .alert("Rename Track", isPresented: $showRenameAlert) {
-//                TextField("New Name", text: $renameText)
-//                Button("Cancel", role: .cancel) { }
-//                Button("Save") {
-//                    if let idx = targetTrackIndex {
-//                        withAnimation(.snappy) {
-//                            audioManager.renameTrack(at: idx, to: renameText)
-//                        }
-//                    }
-//                    targetTrackIndex = nil
-//                }
-//            }
+            //            .alert("Rename Track", isPresented: $showRenameAlert) {
+            //                TextField("New Name", text: $renameText)
+            //                Button("Cancel", role: .cancel) { }
+            //                Button("Save") {
+            //                    if let idx = targetTrackIndex {
+            //                        withAnimation(.snappy) {
+            //                            audioManager.renameTrack(at: idx, to: renameText)
+            //                        }
+            //                    }
+            //                    targetTrackIndex = nil
+            //                }
+            //            }
             .onChange(of: audioManager.currentTrackIndex) { _, newIndex in
                 updateNeighborImages(currentIndex: newIndex)
+                renameText = ""
             }
             .onChange(of: audioManager.playStrategy) { _, _ in
                 updateNeighborImages(currentIndex: audioManager.currentTrackIndex)
             }
+            .onChange(of: audioManager.audioFiles.count) { 
+                if audioManager.audioFiles.isEmpty {
+                    isListVisible = false
+                }
+            }
             .onAppear {
                 updateNeighborImages(currentIndex: audioManager.currentTrackIndex)
             }
-        }        .id(colorScheme)
-
+            
+        }
+        .id(colorScheme)
+        
     }
     
     // MARK: - Views
@@ -155,101 +163,34 @@ struct ContentView: View {
                     .cornerRadius(20)
             }
             
-         
+            
         }
-//        .ignoresSafeArea(.keyboard, edges: showRenameAlert ? [] : .bottom)
-
+        //        .ignoresSafeArea(.keyboard, edges: showRenameAlert ? [] : .bottom)
+        
     }
     
     // MARK: - Subviews
     
-    var customRenameAlert: some View {
-        ZStack {
-            // 1. Dimmed Background (Tap to cancel)
-            Color.black.opacity(0.4)
-                .ignoresSafeArea()
-                .onTapGesture {
-                    withAnimation {
-                        showRenameAlert = false
-                        isRenamingFieldFocused = false
-                    }
-                }
-            
-            // 2. The Input Box
-            VStack(spacing: 15) {
-                Text("Rename Track")
-                    .font(.headline)
-                    .foregroundColor(.primary)
-                
-                TextField("Track Name", text: $renameText)
-                    .focused($isRenamingFieldFocused) // Auto-focus
-                    .padding()
-                    .background(Color(UIColor.secondarySystemBackground))
-                    .cornerRadius(12)
-                    .submitLabel(.done)
-                    .onSubmit {
-                        saveRename()
-                    }
-                
-                HStack(spacing: 15) {
-                    Button(action: {
-                        withAnimation {
-                            showRenameAlert = false
-                            isRenamingFieldFocused = false
-                        }
-                    }) {
-                        Text("Cancel")
-                            .fontWeight(.medium)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(Color(UIColor.secondarySystemBackground))
-                            .foregroundColor(.primary)
-                            .cornerRadius(10)
-                    }
-                    
-                    Button(action: {
-                        saveRename()
-                    }) {
-                        Text("Save")
-                            .fontWeight(.bold)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(Color.primary)
-                            .foregroundColor(Color(UIColor.systemBackground))
-                            .cornerRadius(10)
-                    }
-                }
+    
+    
+    
+    func saveRename() {
+        if let idx = targetTrackIndex {
+            withAnimation(.snappy) {
+                audioManager.renameTrack(at: idx, to: renameText)
             }
-            .padding(20)
-            .background(.regularMaterial) // Glass effect background
-            .cornerRadius(24)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 10) // Some spacing from the keyboard
-            // 👇 KEY: Align to bottom. SwiftUI automatically pushes this up when keyboard appears.
-            .frame(maxHeight: .infinity, alignment: .bottom)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
-        .zIndex(200) // Ensure it sits on top of everything
+        closeRename()
     }
     
+    func closeRename() {
+        withAnimation {
+            showRenameAlert = false
+            isRenamingFieldFocused = false
+            targetTrackIndex = nil
+        }
+    }
     
-       func saveRename() {
-           if let idx = targetTrackIndex {
-               withAnimation(.snappy) {
-                   audioManager.renameTrack(at: idx, to: renameText)
-               }
-           }
-           closeRename()
-       }
-       
-       func closeRename() {
-           withAnimation {
-               showRenameAlert = false
-               isRenamingFieldFocused = false
-               targetTrackIndex = nil
-           }
-       }
-
     @ViewBuilder
     var floatingControls: some View {
         VStack(spacing: 20) {
@@ -257,7 +198,7 @@ struct ContentView: View {
             // MARK: 1. Rename Input Box (Appears on top)
             if showRenameAlert {
                 
-                TextField("Track Name", text: $renameText)
+                TextField(audioManager.trackName, text: $renameText)
                     .font(.headline)
                     .multilineTextAlignment(.center)
                     .padding(.vertical, 12)
@@ -265,7 +206,7 @@ struct ContentView: View {
                     .cornerRadius(12)
                     .glassEffect(.regular)
                     .padding(.horizontal, 16)
-
+                
                     .focused($isRenamingFieldFocused)
                     .submitLabel(.done)
                     .onSubmit {
@@ -325,8 +266,10 @@ struct ContentView: View {
                 // --- RIGHT BUTTON ---
                 Button(action: {
                     if showRenameAlert {
-                        // Action: SAVE RENAME
-                        saveRename()
+                        withAnimation(.spring()) {
+                            renameText = renameText.isEmpty ? audioManager.trackName : ""
+                            
+                        }
                     } else if isSelectionMode {
                         // Action: DELETE SELECTED
                         withAnimation(.spring()) {
@@ -345,7 +288,7 @@ struct ContentView: View {
                 }) {
                     // Icon Logic
                     let iconName: String = {
-                        if showRenameAlert { return "checkmark" }
+                        if showRenameAlert { return renameText.isEmpty ? "pencil" : "eraser" }
                         if isSelectionMode { return "trash" }
                         if isListVisible { return "plus" }
                         return "repeat.1"
@@ -372,7 +315,7 @@ struct ContentView: View {
         }
     }
     
-
+    
     @ViewBuilder
     func imageCarousel(geo: GeometryProxy, squareSize: CGFloat) -> some View {
         ZStack {
@@ -384,17 +327,17 @@ struct ContentView: View {
             
             renderImageView(image: audioManager.trackImage, size: squareSize, placeHolder: !showHint ? "No Cover": "Long Press to Add Cover")
                 .overlay(alignment: .topLeading) { // 1. Align to top-left
-                       Group {
-                           if !audioManager.isPlaying {
-                               Image(systemName: "play.circle.fill")
-                                   .resizable()
-                                   .frame(width: 24, height: 24) // Slightly smaller for the corner looks better
-                                   .foregroundColor(.white.opacity(0.8))
-                                   .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 0)
-                                   .padding(8) // 2. Add padding so it's not flush with the edge
-                           }
-                       }
-                   }
+                    Group {
+                        if !audioManager.isPlaying {
+                            Image(systemName: "play.circle.fill")
+                                .resizable()
+                                .frame(width: 24, height: 24) // Slightly smaller for the corner looks better
+                                .foregroundColor(.white.opacity(0.8))
+                                .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 0)
+                                .padding(8) // 2. Add padding so it's not flush with the edge
+                        }
+                    }
+                }
                 .offset(x: dragOffset)
                 .onLongPressGesture {
                     let generator = UIImpactFeedbackGenerator(style: .soft)
@@ -411,95 +354,95 @@ struct ContentView: View {
     }
     
     func listView(geo: GeometryProxy) -> some View {
-            ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(spacing: 6) {
-                    
-                    Color.clear.frame(height: 20)
-                    
-                    ForEach(audioManager.audioFiles, id: \.self) { url in
-                        if let index = audioManager.audioFiles.firstIndex(of: url) {
-                            
-                            let isCurrent = audioManager.currentTrackIndex == index
-                            let isSelected = selectedTrackURLs.contains(url)
-                            
-                            // ROW CONTENT (No Button Wrapper)
-                            HStack {
-                                // SELECTION INDICATOR
-                                if isSelectionMode {
-                                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                                        .font(.title2)
-                                        .foregroundColor(isSelected ? .primary : .secondary)
-                                        .padding(.trailing, 8)
-                                        .transition(.scale.combined(with: .opacity))
-                                }
-                                
-                                Text(audioManager.getDisplayName(for: url))
-                                    .fontWeight(isCurrent ? .bold : .regular)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                Spacer()
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 6) {
+                
+                Color.clear.frame(height: 20)
+                
+                ForEach(audioManager.audioFiles, id: \.self) { url in
+                    if let index = audioManager.audioFiles.firstIndex(of: url) {
+                        
+                        let isCurrent = audioManager.currentTrackIndex == index
+                        let isSelected = selectedTrackURLs.contains(url)
+                        
+                        // ROW CONTENT (No Button Wrapper)
+                        HStack {
+                            // SELECTION INDICATOR
+                            if isSelectionMode {
+                                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                    .font(.title2)
+                                    .foregroundColor(isSelected ? .primary : .secondary)
+                                    .padding(.trailing, 8)
+                                    .transition(.scale.combined(with: .opacity))
                             }
-                            .padding(.vertical, 12)
-                            .padding(.horizontal, 16)
-                            .animation(.easeInOut(duration: 0.3), value: isCurrent)
-                            .glassEffect(isCurrent ? .clear : .regular)
-                            .cornerRadius(20)
-                            .foregroundColor(isCurrent ? .primary : .primary.opacity(0.5))
-                            .padding(.horizontal, 16)
-                            .contentShape(Rectangle()) // Makes empty space clickable
                             
-                            // MARK: - GESTURES
-                            // 1. Long Press: Enters Selection Mode
-                            .onLongPressGesture {
-                                if !isSelectionMode {
-                                    let generator = UIImpactFeedbackGenerator(style: .soft)
-                                    generator.impactOccurred()
-                                    withAnimation(.spring()) {
-                                        isSelectionMode = true
-                                        selectedTrackURLs.insert(url)
-                                    }
-                                }
-                            }
-                            // 2. Tap: Plays (Normal) or Toggles (Selection Mode)
-                            // This will NOT fire if the Long Press gesture succeeds.
-                            .onTapGesture {
-                                if isSelectionMode {
-                                    withAnimation(.snappy) {
-                                        if isSelected {
-                                            selectedTrackURLs.remove(url)
-                                            // Optional: Exit mode if nothing left selected
-                                            if selectedTrackURLs.isEmpty {
-                                                isSelectionMode = false
-                                            }
-                                        } else {
-                                            selectedTrackURLs.insert(url)
-                                        }
-                                    }
-                                } else {
-                                    withAnimation { showHint = false }
-                                    audioManager.playTrack(at: index)
+                            Text(audioManager.getDisplayName(for: url))
+                                .fontWeight(isCurrent ? .bold : .regular)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            Spacer()
+                        }
+                        .padding(.vertical, 12)
+                        .padding(.horizontal, 16)
+                        .animation(.easeInOut(duration: 0.3), value: isCurrent)
+                        .glassEffect(isCurrent ? .clear : .regular)
+                        .cornerRadius(20)
+                        .foregroundColor(isCurrent ? .primary : .primary.opacity(0.5))
+                        .padding(.horizontal, 16)
+                        .contentShape(Rectangle()) // Makes empty space clickable
+                        
+                        // MARK: - GESTURES
+                        // 1. Long Press: Enters Selection Mode
+                        .onLongPressGesture {
+                            if !isSelectionMode {
+                                let generator = UIImpactFeedbackGenerator(style: .soft)
+                                generator.impactOccurred()
+                                withAnimation(.spring()) {
+                                    isSelectionMode = true
+                                    selectedTrackURLs.insert(url)
                                 }
                             }
                         }
+                        // 2. Tap: Plays (Normal) or Toggles (Selection Mode)
+                        // This will NOT fire if the Long Press gesture succeeds.
+                        .onTapGesture {
+                            if isSelectionMode {
+                                withAnimation(.snappy) {
+                                    if isSelected {
+                                        selectedTrackURLs.remove(url)
+                                        // Optional: Exit mode if nothing left selected
+                                        if selectedTrackURLs.isEmpty {
+                                            isSelectionMode = false
+                                        }
+                                    } else {
+                                        selectedTrackURLs.insert(url)
+                                    }
+                                }
+                            } else {
+                                withAnimation { showHint = false }
+                                audioManager.playTrack(at: index)
+                            }
+                        }
                     }
-                    
-                    Color.clear.frame(height: 100)
                 }
+                
+                Color.clear.frame(height: 100)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .mask(
-                LinearGradient(
-                    gradient: Gradient(stops: [
-                        .init(color: .clear, location: 0.0),
-                        .init(color: .black, location: 0.05),
-                        .init(color: .black, location: 0.9),
-                        .init(color: .clear, location: 1.0)
-                    ]),
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .mask(
+            LinearGradient(
+                gradient: Gradient(stops: [
+                    .init(color: .clear, location: 0.0),
+                    .init(color: .black, location: 0.05),
+                    .init(color: .black, location: 0.9),
+                    .init(color: .clear, location: 1.0)
+                ]),
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
     var playingView: some View {
         VStack(spacing: 0) {
             
@@ -513,6 +456,7 @@ struct ContentView: View {
                         let generator = UIImpactFeedbackGenerator(style: .soft)
                         generator.impactOccurred()
                         
+                        withAnimation { showHint = false }
                         if let current = audioManager.currentTrackIndex {
                             targetTrackIndex = current
                             renameText = audioManager.trackName
@@ -617,12 +561,13 @@ struct ContentView: View {
                         } else {
                             if verticalAmount < 0 {
                                 withAnimation(.spring()) { isListVisible = true }
-                            } else {
-                                audioManager.seek(to: 0)
-                                let generator = UIImpactFeedbackGenerator(style: .soft)
-                                generator.impactOccurred()
-                               
                             }
+                            //                            else {
+                            //                                audioManager.seek(to: 0)
+                            //                                let generator = UIImpactFeedbackGenerator(style: .soft)
+                            //                                generator.impactOccurred()
+                            //
+                            //                            }
                         }
                     }
                     withAnimation(.spring()) { dragOffset = 0 }
@@ -685,8 +630,8 @@ struct ContentView: View {
                     .aspectRatio(contentMode: .fill)
             } else {
                 Rectangle()
-                    .fill(Color.black)
-                    .overlay(Text(placeHolder).foregroundColor(.gray).font(.caption))
+                    .fill(Color.primary.opacity(0.03))
+                    .overlay(Text(placeHolder).foregroundColor(.primary))
             }
         }
         .frame(width: size, height: size)
@@ -727,13 +672,13 @@ struct ImageCropper: View {
         
         return CGSize(width: image.size.width * ratio, height: image.size.height * ratio)
     }
-
+    
     var body: some View {
         ZStack(alignment: .bottom) {
             
             // 1. Background
             Color(UIColor.systemBackground).ignoresSafeArea()
-
+            
             // 2. Cropping Content
             VStack {
                 Spacer()
@@ -746,7 +691,7 @@ struct ImageCropper: View {
                         .frame(width: cropSize, height: cropSize)
                         .scaleEffect(scale)
                         .offset(offset)
-                        // 👇 GESTURES
+                    // 👇 GESTURES
                         .gesture(
                             DragGesture()
                                 .onChanged { v in
@@ -770,7 +715,7 @@ struct ImageCropper: View {
                                     offset = CGSize(width: clampedX, height: clampedY)
                                 }
                                 .onEnded { _ in lastOffset = offset }
-                                // Combine with Zoom
+                            // Combine with Zoom
                                 .simultaneously(with: MagnificationGesture()
                                     .onChanged { v in
                                         let newScale = lastScale * v
@@ -850,17 +795,17 @@ struct ImageCropper: View {
         .id(colorScheme)
         .statusBarHidden()
     }
-
+    
     @MainActor
     func cropImage() {
         let renderer = ImageRenderer(content:
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: cropSize, height: cropSize)
-                .scaleEffect(scale)
-                .offset(offset)
-                .clipped()
+                                        Image(uiImage: image)
+            .resizable()
+            .scaledToFill()
+            .frame(width: cropSize, height: cropSize)
+            .scaleEffect(scale)
+            .offset(offset)
+            .clipped()
         )
         
         renderer.scale = displayScale
