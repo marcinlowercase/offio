@@ -34,19 +34,15 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
     // --- Playback Settings ---
     var playStrategy: PlayStrategy = .off {
         didSet {
-            // Save state whenever it changes
             UserDefaults.standard.set(playStrategy.rawValue, forKey: "PlayStrategy")
-            // Update buttons immediately when strategy changes
             updateCommandAvailability()
         }
     }
     var isRepeatOne: Bool = false {
         didSet {
-            // Save state whenever it changes
             UserDefaults.standard.set(isRepeatOne, forKey: "IsRepeatOne")
         }
     }
-    // ---------------------------------
     
     var trackImage: UIImage? = nil
     var trackName: String = "No Audio Selected"
@@ -54,23 +50,13 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
     var player: AVAudioPlayer?
     var timer: Timer?
     
-    
-    // Make init private so no one can accidentally create a second instance
     private override init() {
         super.init()
-        
-        // 1. Setup Audio Session FIRST
         setupAudioSession()
-        
-        // 2. Load Data
         loadCustomNames()
         restorePlaybackSettings()
         loadFilesFromDocumentDirectory()
-        
-        // 3. Setup Commands
         setupRemoteCommandCenter()
-        
-        // 4. Restore State
         restoreLastPlayedTrack()
         
         if playStrategy == .shuffle {
@@ -78,30 +64,96 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
         }
     }
     
-    // MARK: - State Persistence
+    // MARK: - File Management
     
-    func loadCustomNames() {
-        if let saved = UserDefaults.standard.dictionary(forKey: "CustomTrackNames") as? [String: String] {
-            customNames = saved
+    func deleteTrack(at index: Int) {
+        guard audioFiles.indices.contains(index) else { return }
+        let url = audioFiles[index]
+        var nextTrackUrlToFocus: URL? = nil
+        
+        // 1. IF DELETING CURRENT TRACK: Determine what to focus next
+        if currentTrackIndex == index {
+            
+            // Try to find the next track based on current strategy (Shuffle/Repeat)
+            if let nextIndex = getNextTrackIndex() {
+                nextTrackUrlToFocus = audioFiles[nextIndex]
+            }
+            // If next is nil (e.g. End of list + Repeat Off), try Previous
+            else if let prevIndex = getPreviousTrackIndex() {
+                nextTrackUrlToFocus = audioFiles[prevIndex]
+            }
+            
+            // Stop current playback
+            player?.stop()
+            player = nil
+            isPlaying = false
+            timer?.invalidate()
+            
+            // Clear metadata temporarily
+            trackName = "No Audio Selected"
+            trackImage = nil
+            currentTime = 0
+            duration = 0
+            currentTrackIndex = nil
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        }
+        
+        // 2. Delete File from Disk
+        do {
+            try FileManager.default.removeItem(at: url)
+            let artUrl = url.appendingPathExtension("jpg")
+            if FileManager.default.fileExists(atPath: artUrl.path) {
+                try? FileManager.default.removeItem(at: artUrl)
+            }
+            
+            let filename = url.lastPathComponent
+            if customNames[filename] != nil {
+                customNames.removeValue(forKey: filename)
+                UserDefaults.standard.set(customNames, forKey: "CustomTrackNames")
+            }
+            
+            // 3. HANDLE SHUFFLE QUEUE UPDATE
+            if !shuffledIndices.isEmpty {
+                if let indexInShuffle = shuffledIndices.firstIndex(of: index) {
+                    shuffledIndices.remove(at: indexInShuffle)
+                }
+                for i in 0..<shuffledIndices.count {
+                    if shuffledIndices[i] > index {
+                        shuffledIndices[i] -= 1
+                    }
+                }
+            }
+            
+            // 4. Handle Index Shift (for normal logic)
+            if let current = currentTrackIndex, index < current {
+                currentTrackIndex = current - 1
+            }
+            
+            // 5. Reload List
+            loadFilesFromDocumentDirectory()
+            
+            if playStrategy == .shuffle && shuffledIndices.isEmpty && !audioFiles.isEmpty {
+                generateShuffleList()
+            }
+            
+            // 6. RE-FOCUS LOGIC
+            // If we have a target URL (from Step 1), find its new index and prepare it
+            if let targetUrl = nextTrackUrlToFocus, let newIndex = audioFiles.firstIndex(of: targetUrl) {
+                preparePlayer(at: newIndex)
+            } else if currentTrackIndex == nil && !audioFiles.isEmpty {
+                // Fallback: If logic failed but we still have files, focus the first one
+                preparePlayer(at: 0)
+            } else {
+                 updateCommandAvailability()
+            }
+            
+        } catch {
+            print("Error deleting file: \(error)")
         }
     }
     
-    func restorePlaybackSettings() {
-        if let savedStrategy = UserDefaults.standard.string(forKey: "PlayStrategy"),
-           let strategy = PlayStrategy(rawValue: savedStrategy) {
-            self.playStrategy = strategy
-        }
-        self.isRepeatOne = UserDefaults.standard.bool(forKey: "IsRepeatOne")
-    }
-    
-    
-    func getDisplayName(for url: URL) -> String {
-        let filename = url.lastPathComponent
-        return customNames[filename] ?? filename
-    }
-    
-    func renameCurrentTrack(to userTypedName: String) {
-        guard let index = currentTrackIndex, audioFiles.indices.contains(index) else { return }
+    func renameTrack(at index: Int, to userTypedName: String) {
+        guard audioFiles.indices.contains(index) else { return }
         guard !userTypedName.isEmpty else { return }
         
         let currentUrl = audioFiles[index]
@@ -133,16 +185,72 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
             customNames[newPhysicalName] = userTypedName
             UserDefaults.standard.set(customNames, forKey: "CustomTrackNames")
             
+            // Reload to reflect changes
             loadFilesFromDocumentDirectory()
             
+            // If we renamed the currently playing track, update the UI
             if let newIndex = audioFiles.firstIndex(of: newUrl) {
-                currentTrackIndex = newIndex
-                trackName = getDisplayName(for: newUrl)
-                UserDefaults.standard.set(newUrl.lastPathComponent, forKey: "LastPlayedTrack")
-                updateNowPlayingInfo()
+                if currentTrackIndex == index {
+                    currentTrackIndex = newIndex
+                    trackName = getDisplayName(for: newUrl)
+                    UserDefaults.standard.set(newUrl.lastPathComponent, forKey: "LastPlayedTrack")
+                    updateNowPlayingInfo()
+                }
                 if playStrategy == .shuffle { generateShuffleList() }
             }
         } catch { print("Error renaming: \(error)") }
+    }
+    
+    // MARK: - State Persistence & Helpers
+    
+    func loadCustomNames() {
+        if let saved = UserDefaults.standard.dictionary(forKey: "CustomTrackNames") as? [String: String] {
+            customNames = saved
+        }
+    }
+    
+    func restorePlaybackSettings() {
+        if let savedStrategy = UserDefaults.standard.string(forKey: "PlayStrategy"),
+           let strategy = PlayStrategy(rawValue: savedStrategy) {
+            self.playStrategy = strategy
+        }
+        self.isRepeatOne = UserDefaults.standard.bool(forKey: "IsRepeatOne")
+    }
+    
+    func getDisplayName(for url: URL) -> String {
+        let filename = url.lastPathComponent
+        return customNames[filename] ?? filename
+    }
+    
+    // MARK: - Playback Logic
+    
+    // NEW FUNCTION: Loads track, sets metadata, but DOES NOT play.
+    // Used for "Focus" on import or after delete.
+    func preparePlayer(at index: Int) {
+        guard audioFiles.indices.contains(index) else { return }
+        
+        currentTrackIndex = index
+        let url = audioFiles[index]
+        trackName = getDisplayName(for: url)
+        UserDefaults.standard.set(url.lastPathComponent, forKey: "LastPlayedTrack")
+        loadCustomImage(for: url)
+        
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            player = try AVAudioPlayer(contentsOf: url)
+            player?.delegate = self
+            player?.prepareToPlay()
+            
+            // Don't play, just setup
+            duration = player?.duration ?? 0.0
+            currentTime = 0.0
+            isPlaying = false
+            timer?.invalidate() // Ensure timer isn't running
+            
+            updateNowPlayingInfo()
+        } catch {
+            print("Prepare failed: \(error)")
+        }
     }
     
     func playTrack(at index: Int) {
@@ -174,22 +282,18 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
     
     func setupAudioSession() {
         do {
-           
             try AVAudioSession.sharedInstance().setCategory(
                 .playback,
                 mode: .default,
                 options: []
             )
             try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            print("Failed to set audio session: \(error)")
-        }
+        } catch { print("Failed to set audio session: \(error)") }
     }
    
     func setupRemoteCommandCenter() {
         let commandCenter = MPRemoteCommandCenter.shared()
         
-        // 1. CLEAR EVERYTHING FIRST
         commandCenter.playCommand.removeTarget(nil)
         commandCenter.pauseCommand.removeTarget(nil)
         commandCenter.togglePlayPauseCommand.removeTarget(nil)
@@ -197,7 +301,6 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
         commandCenter.previousTrackCommand.removeTarget(nil)
         commandCenter.changePlaybackPositionCommand.removeTarget(nil)
         
-        // 2. PAUSE
         commandCenter.pauseCommand.isEnabled = true
         commandCenter.pauseCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
@@ -210,7 +313,6 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
             return .success
         }
         
-        // 3. PLAY
         commandCenter.playCommand.isEnabled = true
         commandCenter.playCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
@@ -226,7 +328,6 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
             return .success
         }
         
-        // 4. TOGGLE
         commandCenter.togglePlayPauseCommand.isEnabled = true
         commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
@@ -234,8 +335,6 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
             return .success
         }
         
-        // 5. NEXT
-        // Note: isEnabled state is now managed dynamically in updateCommandAvailability()
         commandCenter.nextTrackCommand.isEnabled = true
         commandCenter.nextTrackCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
@@ -243,8 +342,6 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
             return .success
         }
         
-        // 6. PREVIOUS
-        // Note: isEnabled state is now managed dynamically in updateCommandAvailability()
         commandCenter.previousTrackCommand.isEnabled = true
         commandCenter.previousTrackCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
@@ -252,7 +349,6 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
             return .success
         }
         
-        // 7. SCRUBBER
         commandCenter.changePlaybackPositionCommand.isEnabled = true
         commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let self = self, let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
@@ -267,54 +363,17 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
         UIApplication.shared.beginReceivingRemoteControlEvents()
     }
     
-    // MARK: - Dynamic Button Logic
     func updateCommandAvailability() {
         let center = MPRemoteCommandCenter.shared()
-        
-        // Safety check: if no audio is loaded, disable both
         guard let index = currentTrackIndex, !audioFiles.isEmpty else {
-            center.nextTrackCommand.isEnabled = false
-            center.previousTrackCommand.isEnabled = false
-            return
+            center.nextTrackCommand.isEnabled = false; center.previousTrackCommand.isEnabled = false; return
         }
-        
         if playStrategy == .off {
-            // Repeat OFF logic:
-            // Disable Previous if we are at the very first track (index 0)
             center.previousTrackCommand.isEnabled = (index > 0)
-            
-            // Disable Next if we are at the very last track
             center.nextTrackCommand.isEnabled = (index < audioFiles.count - 1)
         } else {
-            // Repeat ALL or Shuffle logic:
-            // Always enabled because the list wraps around
-            center.previousTrackCommand.isEnabled = true
-            center.nextTrackCommand.isEnabled = true
+            center.previousTrackCommand.isEnabled = true; center.nextTrackCommand.isEnabled = true
         }
-    }
-    
-    
-    func playFromRemote() {
-        do {
-            try AVAudioSession.sharedInstance().setActive(true)
-            player?.play()
-            isPlaying = true
-            startTimer()
-            updateNowPlayingInfo()
-        } catch {
-            print("Remote play failed:", error)
-        }
-    }
-
-    func pauseFromRemote() {
-        player?.pause()
-        isPlaying = false
-        timer?.invalidate()
-        updateNowPlayingInfo()
-    }
-    func syncPlaybackState() {
-        isPlaying = player?.isPlaying ?? false
-        updateNowPlayingInfo()
     }
     
     func cyclePlayStrategy() {
@@ -323,34 +382,25 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
         case .shuffle: playStrategy = .all
         case .all: playStrategy = .off
         }
-        // Note: The didSet observer on `playStrategy` will call updateCommandAvailability() automatically
     }
     
-    func generateShuffleList() {
-        shuffledIndices = audioFiles.indices.shuffled()
-    }
+    func generateShuffleList() { shuffledIndices = audioFiles.indices.shuffled() }
     
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         guard let current = currentTrackIndex else { return }
         if isRepeatOne { playTrack(at: current); return }
-        
         if let next = getNextTrackIndex() {
             if playStrategy == .off && next == 0 && !isShuffleMode() {
-                if current == audioFiles.count - 1 {
-                    isPlaying = false; seek(to: 0); updateNowPlayingInfo(); return
-                }
+                if current == audioFiles.count - 1 { isPlaying = false; seek(to: 0); updateNowPlayingInfo(); return }
             }
             playTrack(at: next)
         }
     }
     
-    private func isShuffleMode() -> Bool {
-        return playStrategy == .shuffle && !shuffledIndices.isEmpty
-    }
+    private func isShuffleMode() -> Bool { return playStrategy == .shuffle && !shuffledIndices.isEmpty }
     
     func getNextTrackIndex() -> Int? {
         guard let current = currentTrackIndex, !audioFiles.isEmpty else { return nil }
-        
         if isShuffleMode() {
             if let indexInShuffle = shuffledIndices.firstIndex(of: current) {
                 let nextShufflePos = indexInShuffle + 1
@@ -358,14 +408,12 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
             } else { return shuffledIndices.first }
         } else {
             let nextIndex = current + 1
-            if nextIndex < audioFiles.count { return nextIndex }
-            else { return playStrategy == .all ? 0 : nil }
+            if nextIndex < audioFiles.count { return nextIndex } else { return playStrategy == .all ? 0 : nil }
         }
     }
     
     func getPreviousTrackIndex() -> Int? {
         guard let current = currentTrackIndex, !audioFiles.isEmpty else { return nil }
-        
         if isShuffleMode() {
             if let indexInShuffle = shuffledIndices.firstIndex(of: current) {
                 let prevShufflePos = indexInShuffle - 1
@@ -373,17 +421,13 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
             } else { return shuffledIndices.first }
         } else {
             let prevIndex = current - 1
-            if prevIndex >= 0 { return prevIndex }
-            else { return playStrategy == .all ? audioFiles.count - 1 : nil }
+            if prevIndex >= 0 { return prevIndex } else { return playStrategy == .all ? audioFiles.count - 1 : nil }
         }
     }
     
     func nextTrack() {
         if let next = getNextTrackIndex() {
-            if playStrategy == .off && next == 0 && !isShuffleMode() {
-                isPlaying = false; updateNowPlayingInfo()
-                
-            } else { playTrack(at: next) }
+            if playStrategy == .off && next == 0 && !isShuffleMode() { isPlaying = false; updateNowPlayingInfo() } else { playTrack(at: next) }
         }
     }
     
@@ -394,62 +438,25 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
     
     func togglePlayPause() {
         guard let player = player else { return }
-        
-        if self.isPlaying {
-            print("pause")
-            player.pause()
-            isPlaying = false
-            timer?.invalidate()
-        } else {
-            print("play")
-            do {
-                try AVAudioSession.sharedInstance().setActive(true)
-                player.play()
-                isPlaying = true
-                startTimer()
-            } catch {
-                print("Failed to activate audio session: \(error)")
-            }
-        }
+        if self.isPlaying { player.pause(); isPlaying = false; timer?.invalidate() }
+        else { try? AVAudioSession.sharedInstance().setActive(true); player.play(); isPlaying = true; startTimer() }
         updateNowPlayingInfo()
     }
     
     func startScrubbing() { if isPlaying { player?.pause(); timer?.invalidate() } }
     func endScrubbing() { if isPlaying { player?.play(); startTimer() } }
-    
     func startTimer() { timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in self.currentTime = self.player?.currentTime ?? 0.0 } }
     func seek(to time: TimeInterval) { player?.currentTime = time; currentTime = time; updateNowPlayingInfo() }
     
     func updateNowPlayingInfo() {
-        guard let player = player else {
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-            // If player is nil, disable controls
-            updateCommandAvailability()
-            return
-        }
-
+        guard let player = player else { MPNowPlayingInfoCenter.default().nowPlayingInfo = nil; updateCommandAvailability(); return }
         var nowPlayingInfo = [String: Any]()
-        
-        // Title
         nowPlayingInfo[MPMediaItemPropertyTitle] = trackName
-        
-        // Artwork
-        if let image = trackImage {
-            nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in return image }
-        }
-        
-        // Duration
+        if let image = trackImage { nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in return image } }
         nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = player.duration
-        
-        // Current Time
         nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player.currentTime
-        
-        // Rate (1.0 = Playing, 0.0 = Paused)
         nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
-        
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-        
-        // 👇 Update the button states (Enable/Disable Next/Prev)
         updateCommandAvailability()
     }
     
@@ -466,65 +473,46 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
                 if fileManager.fileExists(atPath: oldImage.path) { try? fileManager.removeItem(at: oldImage) }
             }
             try fileManager.copyItem(at: url, to: destination)
-            DispatchQueue.main.async {
-                self.loadFilesFromDocumentDirectory()
-                if self.playStrategy == .shuffle { self.generateShuffleList() }
-                
-            }
+            DispatchQueue.main.async { self.loadFilesFromDocumentDirectory(); if self.playStrategy == .shuffle { self.generateShuffleList() } }
         } catch { print("Error importing file: \(error)") }
     }
     
     func loadFilesFromDocumentDirectory() {
-        // 1. Capture the URL of the song currently playing (before we change the array order)
         var currentlyPlayingURL: URL? = nil
-        if let index = currentTrackIndex, audioFiles.indices.contains(index) {
-            currentlyPlayingURL = audioFiles[index]
-        }
-
-        // 2. Perform the load and sort
+        if let index = currentTrackIndex, audioFiles.indices.contains(index) { currentlyPlayingURL = audioFiles[index] }
         let fileManager = FileManager.default
         let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
         do {
             let items = try fileManager.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil)
-            self.audioFiles = items
-                .filter { ["mp3", "m4a", "wav"].contains($0.pathExtension.lowercased()) }
-                .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-            
-        } catch {
-            print("Error loading files: \(error)")
-        }
-
-        // 3. Find where the playing song moved to in the new list
+            self.audioFiles = items.filter { ["mp3", "m4a", "wav"].contains($0.pathExtension.lowercased()) }.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        } catch { print("Error loading files: \(error)") }
+        
         if let url = currentlyPlayingURL, let newIndex = audioFiles.firstIndex(of: url) {
-            // Update the pointer so the UI stays on the correct song
             currentTrackIndex = newIndex
         } else {
-            // If the playing file was somehow deleted during this process
             if currentlyPlayingURL != nil {
                 currentTrackIndex = nil
+            } else if currentTrackIndex == nil && !audioFiles.isEmpty {
+                // 👇 NEW LOGIC: If no track was playing (nil), but we now have files (first import),
+                // Focus the first track (index 0) so user can just hit play.
+                preparePlayer(at: 0)
             }
         }
-        
-        // Update buttons (e.g., if we were at end of list, importing a file might enable "Next")
         updateCommandAvailability()
     }
     
     func restoreLastPlayedTrack() {
         guard let lastPlayedName = UserDefaults.standard.string(forKey: "LastPlayedTrack") else { return }
         if let index = audioFiles.firstIndex(where: { $0.lastPathComponent == lastPlayedName }) {
-            currentTrackIndex = index; let url = audioFiles[index];
-            trackName = getDisplayName(for: url)
-            loadCustomImage(for: url)
+            currentTrackIndex = index; let url = audioFiles[index]; trackName = getDisplayName(for: url); loadCustomImage(for: url)
             do { player = try AVAudioPlayer(contentsOf: url); player?.delegate = self; player?.prepareToPlay(); duration = player?.duration ?? 0.0; updateNowPlayingInfo() } catch { print("Failed to restore track") }
         }
     }
     
     func saveImage(_ image: UIImage, for url: URL) {
         self.trackImage = image; updateNowPlayingInfo()
-        let imageUrl = url.appendingPathExtension("jpg")
-        if let data = image.jpegData(compressionQuality: 0.8) { try? data.write(to: imageUrl) }
+        let imageUrl = url.appendingPathExtension("jpg"); if let data = image.jpegData(compressionQuality: 0.8) { try? data.write(to: imageUrl) }
     }
-    
     func loadCustomImage(for url: URL) { if let image = getImage(for: url) { self.trackImage = image } else { self.trackImage = nil } }
     func getImage(at index: Int) -> UIImage? { guard audioFiles.indices.contains(index) else { return nil }; return getImage(for: audioFiles[index]) }
     private func getImage(for url: URL) -> UIImage? {

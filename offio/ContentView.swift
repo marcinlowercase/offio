@@ -28,9 +28,11 @@ struct ContentView: View {
     // --- RENAME STATES ---
     @State private var showRenameAlert = false
     @State private var renameText = ""
+    @State private var targetTrackIndex: Int? = nil
     
     // --- HINT STATE ---
     @State private var showHint = true
+    
 
     
     // Animation States
@@ -40,98 +42,123 @@ struct ContentView: View {
     @State private var nextImage: UIImage? = nil
     
     var body: some View {
-        GeometryReader { geo in
-
-            // 1. Main ZStack aligned to bottom for the floating controls
-            ZStack(alignment: .bottom) {
-                Color(UIColor.systemBackground).ignoresSafeArea()
-                
-                // 2. Main Content Layout (Top Aligned)
-                VStack(spacing: 0) {
-                    
-                    // MARK: - 1. Image Section (Carousel)
-                    let squareSize = geo.size.width - 16
-                    imageCarousel(geo: geo, squareSize: squareSize)
-                    
-                    // MARK: - 2. Content Section
-                    // We use ZStack to stack PlayingView and ListView on top of each other
-                    ZStack {
-                        // A. Playing View (Bottom Layer)
-                        // It stays in place but fades out when list covers it
-                        playingView
-                            .opacity(isListVisible ? 0 : 1)
-                            .animation(.easeInOut(duration: 0.3), value: isListVisible)
-                        
-                        // B. List View (Top Layer)
-                        // We use .offset to slide it in/out.
-                        // geo.size.height guarantees it moves far enough to clear the screen.
-                        listView
-                            .offset(y: isListVisible ? 0 : geo.size.height)
-                            // Optional: Fade slightly as it leaves
-                            .opacity(isListVisible ? 1 : 0)
-                            // Use a spring animation for a nice "Drawer" feel
-                            .animation(.spring(response: 0.5, dampingFraction: 0.8), value: isListVisible)
-                    }
-                    .frame(maxHeight: .infinity)
-                    // Clip allows the list to slide "under" the carousel if you want,
-                    // or keeps it contained in this area.
-                    .clipped()
-                }
-                
-                // 3. Global Floating Controls
-                floatingControls
-                    .padding(.bottom, 20)
-                
-                // 4. Loading Overlay
-                if isProcessingImage {
-                    Color.black.opacity(0.4).ignoresSafeArea()
-                    ProgressView("Loading Image...")
-                        .padding()
-                        .background(Color(UIColor.systemBackground))
-                        .cornerRadius(20)
+            // Root ZStack handles the switching between Landing Screen and Player
+            ZStack {
+                if audioManager.audioFiles.isEmpty {
+                    landingView
+                } else {
+                    mainInterface
                 }
             }
             .statusBarHidden()
-            
-            // GESTURE LOGIC
-            .gesture(dragGesture(geo: geo))
-        }
-        .onOpenURL { url in audioManager.importFile(from: url) }
-        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.audio], allowsMultipleSelection: true) { result in
-            if let urls = try? result.get() { for u in urls { audioManager.importFile(from: u) } }
-        }
-        .photosPicker(isPresented: $showImagePicker, selection: $selectedImageItem, matching: .images)
-        .onChange(of: selectedImageItem) { _, newItem in
-            handleImageSelection(newItem)
-        }
-        .fullScreenCover(isPresented: $showCropper) {
-            if let img = imageToCrop {
-                ImageCropper(image: img) { croppedImage in
-                    if let currentUrl = audioManager.audioFiles[safe: audioManager.currentTrackIndex ?? -1] {
-                        audioManager.saveImage(croppedImage, for: currentUrl)
+            // --- GLOBAL MODIFIERS (Apply to both screens) ---
+            .onOpenURL { url in audioManager.importFile(from: url) }
+            .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.audio], allowsMultipleSelection: true) { result in
+                if let urls = try? result.get() { for u in urls { audioManager.importFile(from: u) } }
+            }
+            .photosPicker(isPresented: $showImagePicker, selection: $selectedImageItem, matching: .images)
+            .onChange(of: selectedImageItem) { _, newItem in
+                handleImageSelection(newItem)
+            }
+            .fullScreenCover(isPresented: $showCropper) {
+                if let img = imageToCrop {
+                    ImageCropper(image: img) { croppedImage in
+                        if let currentUrl = audioManager.audioFiles[safe: audioManager.currentTrackIndex ?? -1] {
+                            audioManager.saveImage(croppedImage, for: currentUrl)
+                        }
                     }
                 }
             }
-        }
-        .alert("Rename Track", isPresented: $showRenameAlert) {
-            TextField("New Name", text: $renameText)
-            Button("Cancel", role: .cancel) { }
-            Button("Save") {
-                withAnimation(.snappy) {
-                    audioManager.renameCurrentTrack(to: renameText)
+            .alert("Rename Track", isPresented: $showRenameAlert) {
+                TextField("New Name", text: $renameText)
+                Button("Cancel", role: .cancel) { }
+                Button("Save") {
+                    if let idx = targetTrackIndex {
+                        withAnimation(.snappy) {
+                            audioManager.renameTrack(at: idx, to: renameText)
+                        }
+                    }
+                    targetTrackIndex = nil
                 }
             }
+            .onChange(of: audioManager.currentTrackIndex) { _, newIndex in
+                updateNeighborImages(currentIndex: newIndex)
+            }
+            .onChange(of: audioManager.playStrategy) { _, _ in
+                   updateNeighborImages(currentIndex: audioManager.currentTrackIndex)
+               }
+            .onAppear {
+                updateNeighborImages(currentIndex: audioManager.currentTrackIndex)
+            }
         }
-        .onChange(of: audioManager.currentTrackIndex) { _, newIndex in
-            updateNeighborImages(currentIndex: newIndex)
+    
+    // MARK: - Views
+    // Landing Screen (Empty State)
+        var landingView: some View {
+            ZStack {
+                Color(UIColor.systemBackground).ignoresSafeArea()
+                
+                VStack(spacing: 20) {
+                    Image(systemName: "waveform.circle")
+                        .font(.system(size: 80))
+                        .foregroundStyle(.tertiary)
+                    
+                    Text("Click to Import")
+                        .font(.title2)
+                        .fontWeight(.medium)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .contentShape(Rectangle()) // Make the entire screen tappable
+            .onTapGesture {
+                showFileImporter = true
+            }
         }
-        .onChange(of: audioManager.playStrategy) { _, _ in
-               updateNeighborImages(currentIndex: audioManager.currentTrackIndex)
-           }
-        .onAppear {
-            updateNeighborImages(currentIndex: audioManager.currentTrackIndex)
+        
+        // Main Player Interface
+        var mainInterface: some View {
+            GeometryReader { geo in
+                ZStack(alignment: .bottom) {
+                    Color(UIColor.systemBackground).ignoresSafeArea()
+                    
+                    VStack(spacing: 0) {
+                        
+                        // A. Image Carousel
+                        let squareSize = geo.size.width - 16
+                        imageCarousel(geo: geo, squareSize: squareSize)
+                        
+                        // B. Content Section (Stacking Playing & List Views)
+                        ZStack {
+                            playingView
+                                .opacity(isListVisible ? 0 : 1)
+                                .animation(.easeInOut(duration: 0.3), value: isListVisible)
+                            
+                            listView
+                                .offset(y: isListVisible ? 0 : geo.size.height)
+                                .opacity(isListVisible ? 1 : 0)
+                                .animation(.spring(response: 0.5, dampingFraction: 0.8), value: isListVisible)
+                        }
+                        .frame(maxHeight: .infinity)
+                        .clipped()
+                    }
+                    
+                                    
+                    // D. Global Floating Controls
+                    floatingControls
+                        .padding(.bottom, 20)
+                    
+                    // E. Loading Overlay
+                    if isProcessingImage {
+                        Color.black.opacity(0.4).ignoresSafeArea()
+                        ProgressView("Loading Image...")
+                            .padding()
+                            .background(Color(UIColor.systemBackground))
+                            .cornerRadius(20)
+                    }
+                }
+                .gesture(dragGesture(geo: geo))
+            }
         }
-    }
     
     // MARK: - Subviews
     
@@ -249,6 +276,24 @@ struct ContentView: View {
                     .onTapGesture {
                         withAnimation { showHint = false }
                         audioManager.playTrack(at: index)
+                    }
+                    .contextMenu {
+                        Button {
+                            // Set target index to this row
+                            targetTrackIndex = index
+                            renameText = audioManager.getDisplayName(for: url)
+                            showRenameAlert = true
+                        } label: {
+                            Label("Rename", systemImage: "pencil")
+                        }
+                        
+                        Button(role: .destructive) {
+                            withAnimation {
+                                audioManager.deleteTrack(at: index)
+                            }
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
                     }
                 }
                 
