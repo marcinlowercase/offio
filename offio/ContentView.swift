@@ -30,7 +30,7 @@ struct ContentView: View {
     @State private var renameText = ""
     
     // --- HINT STATE ---
-        @State private var showHint = true
+    @State private var showHint = true
     
     // Animation States
     @State private var dragOffset: CGFloat = 0
@@ -41,10 +41,11 @@ struct ContentView: View {
     var body: some View {
         GeometryReader { geo in
 
-            
-            ZStack(alignment: .top) {
+            // 1. Main ZStack aligned to bottom for the floating controls
+            ZStack(alignment: .bottom) {
                 Color(UIColor.systemBackground).ignoresSafeArea()
                 
+                // 2. Main Content Layout (Top Aligned)
                 VStack(spacing: 0) {
                     
                     // MARK: - 1. Image Section (Carousel)
@@ -52,13 +53,35 @@ struct ContentView: View {
                     imageCarousel(geo: geo, squareSize: squareSize)
                     
                     // MARK: - 2. Content Section
-                    if isListVisible {
-                        listView
-                    } else {
+                    // We use ZStack to stack PlayingView and ListView on top of each other
+                    ZStack {
+                        // A. Playing View (Bottom Layer)
+                        // It stays in place but fades out when list covers it
                         playingView
+                            .opacity(isListVisible ? 0 : 1)
+                            .animation(.easeInOut(duration: 0.3), value: isListVisible)
+                        
+                        // B. List View (Top Layer)
+                        // We use .offset to slide it in/out.
+                        // geo.size.height guarantees it moves far enough to clear the screen.
+                        listView
+                            .offset(y: isListVisible ? 0 : geo.size.height)
+                            // Optional: Fade slightly as it leaves
+                            .opacity(isListVisible ? 1 : 0)
+                            // Use a spring animation for a nice "Drawer" feel
+                            .animation(.spring(response: 0.5, dampingFraction: 0.8), value: isListVisible)
                     }
+                    .frame(maxHeight: .infinity)
+                    // Clip allows the list to slide "under" the carousel if you want,
+                    // or keeps it contained in this area.
+                    .clipped()
                 }
                 
+                // 3. Global Floating Controls
+                floatingControls
+                    .padding(.bottom, 20)
+                
+                // 4. Loading Overlay
                 if isProcessingImage {
                     Color.black.opacity(0.4).ignoresSafeArea()
                     ProgressView("Loading Image...")
@@ -89,18 +112,15 @@ struct ContentView: View {
                 }
             }
         }
-        // --- RENAME ALERT (UPDATED) ---
         .alert("Rename Track", isPresented: $showRenameAlert) {
             TextField("New Name", text: $renameText)
             Button("Cancel", role: .cancel) { }
             Button("Save") {
-                // ANIMATE THE CHANGE
                 withAnimation(.snappy) {
                     audioManager.renameCurrentTrack(to: renameText)
                 }
             }
         }
-        // ------------------------------
         .onChange(of: audioManager.currentTrackIndex) { _, newIndex in
             updateNeighborImages(currentIndex: newIndex)
         }
@@ -115,19 +135,64 @@ struct ContentView: View {
     // MARK: - Subviews
     
     @ViewBuilder
+    var floatingControls: some View {
+        HStack(spacing: 50) {
+            
+            // LEFT BUTTON
+            Button(action: {
+                if isListVisible {
+                    withAnimation(.spring()) { isListVisible = false }
+                } else {
+                    audioManager.cyclePlayStrategy()
+                }
+            }) {
+                let iconName = isListVisible ? "chevron.down" : (audioManager.playStrategy == .shuffle ? "shuffle" : "repeat")
+                let color: Color = isListVisible ? .primary : (audioManager.playStrategy == .off ? .primary.opacity(0.1) : .primary)
+                
+                Image(systemName: iconName)
+                    .font(.title2)
+                    .foregroundColor(color)
+                    .frame(width: 60, height: 60)
+                    .glassEffect(.regular.interactive())
+                    .clipShape(Circle())
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .glassEffect(.regular.interactive())
+            
+            Spacer().frame(width: 64)
+            
+            // RIGHT BUTTON
+            Button(action: {
+                if isListVisible {
+                    showFileImporter = true
+                } else {
+                    audioManager.isRepeatOne.toggle()
+                }
+            }) {
+                let iconName = isListVisible ? "plus" : "repeat.1"
+                let color: Color = isListVisible ? .primary : (audioManager.isRepeatOne ? .primary : .primary.opacity(0.1))
+                
+                Image(systemName: iconName)
+                    .font(.title2)
+                    .foregroundColor(color)
+                    .frame(width: 60, height: 60)
+                    .glassEffect(.regular.interactive())
+                    .clipShape(Circle())
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .glassEffect(.regular.interactive())
+        }
+    }
+
+    @ViewBuilder
     func imageCarousel(geo: GeometryProxy, squareSize: CGFloat) -> some View {
         ZStack {
-            // 1. Previous Image
             renderImageView(image: prevImage, size: squareSize, placeHolder: audioManager.getPreviousTrackIndex() == nil ? "No Previous Track": "No Cover")
-        
-            .offset(x: -squareSize - 16.0 + dragOffset)
+                .offset(x: -squareSize - 16.0 + dragOffset)
             
-            // 2. Next Image
-            renderImageView(image: nextImage, size: squareSize, placeHolder: audioManager.getNextTrackIndex() == nil ? "No Next Track": "No Cover"
-            )
-            .offset(x: squareSize + 16.0 + dragOffset)
+            renderImageView(image: nextImage, size: squareSize, placeHolder: audioManager.getNextTrackIndex() == nil ? "No Next Track": "No Cover")
+                .offset(x: squareSize + 16.0 + dragOffset)
             
-            // 3. Current Image
             renderImageView(image: audioManager.trackImage, size: squareSize)
                 .overlay(
                     Group {
@@ -154,217 +219,130 @@ struct ContentView: View {
     }
     
     var listView: some View {
-            ZStack(alignment: .bottom) {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 6) {
                 
-                // MARK: - Scrollable Stack
-                ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(spacing: 6) { // Adjust spacing between "notifications" here
-                        
-                        // Add some padding at the top so the first item doesn't start instantly at the cut-off
-                        Color.clear.frame(height: 20)
-                        
-                        ForEach(audioManager.audioFiles.indices, id: \.self) { index in
-                            let url = audioManager.audioFiles[index]
-                            let isCurrent = audioManager.currentTrackIndex == index
-                            
-                            HStack {
-                                Text(audioManager.getDisplayName(for: url))
-                                    .fontWeight(isCurrent ? .bold : .regular)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                
-                                Spacer()
-                            }
-                            .padding(.vertical, 12) // Slightly taller for "notification" feel
-                            .padding(.horizontal, 16)
-                            
-                            // 1. Dynamic Styling
-                            .background(isCurrent ? Color.primary : Color(UIColor.secondarySystemBackground))
-                            .cornerRadius(20)
-                            .foregroundColor(isCurrent ? Color(UIColor.systemBackground) : .primary)
-                            
-                            // 2. Smooth Transition
-                            .animation(.easeInOut(duration: 0.3), value: isCurrent)
-                            
-                            // 3. Side Padding (Makes them look like floating cards)
-                            .padding(.horizontal, 16)
-                            
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                withAnimation { showHint = false }
-                                audioManager.playTrack(at: index)
-                            }
-                        }
-                        
-                        // Add padding at bottom so last item isn't covered by buttons
-                        Color.clear.frame(height: 100)
-                    }
-                }
-                // MARK: - The Fade Mask
-                // This creates the soft edges at top and bottom
-//                .mask(
-//                    LinearGradient(
-//                        gradient: Gradient(stops: [
-//                            .init(color: .clear, location: 0.0),    // Top Edge: Transparent
-//                            .init(color: .black, location: 0.05),   // Start showing content quickly
-//                            .init(color: .black, location: 0.9),    // Keep showing content until near bottom
-//                            .init(color: .clear, location: 1.0)     // Bottom Edge: Transparent
-//                        ]),
-//                        startPoint: .top,
-//                        endPoint: .bottom
-//                    )
-//                )
+                Color.clear.frame(height: 20)
                 
-                // MARK: - Bottom Controls (Floating)
-                // We use an overlay or ZStack, but since this is a VStack, we put it here
-                // We use negative padding or ignore layout to make it sit 'over' the fading list if desired,
-                // but keeping it separate is cleaner for interaction.
-                
-                HStack (spacing: 50) {
-                    Button(action: { withAnimation(.spring()) { isListVisible = false } }) {
-                        Image(systemName: "chevron.down")
-                            .font(.title2)
-                            .foregroundColor(.primary)
-                            .frame(width: 60, height: 60)
-                            .glassEffect(.regular.interactive())
-                            .clipShape(Circle())
-                    }
-                    .glassEffect(.regular.interactive())
+                ForEach(audioManager.audioFiles.indices, id: \.self) { index in
+                    let url = audioManager.audioFiles[index]
+                    let isCurrent = audioManager.currentTrackIndex == index
                     
-                    Spacer().frame(width: 64)
-
-                    Button(action: { showFileImporter = true }) {
-                        Image(systemName: "plus")
-                            .font(.title2)
-                            .foregroundColor(.primary)
-                            .frame(width: 60, height: 60)
-                            .glassEffect(.regular.interactive())
-                            .clipShape(Circle())
+                    HStack {
+                        Text(audioManager.getDisplayName(for: url))
+                            .fontWeight(isCurrent ? .bold : .regular)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer()
                     }
-                    .glassEffect(.regular.interactive())
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 16)
+                    .background(isCurrent ? Color.primary : Color(UIColor.secondarySystemBackground))
+                    .cornerRadius(20)
+                    .foregroundColor(isCurrent ? Color(UIColor.systemBackground) : .primary)
+                    .animation(.easeInOut(duration: 0.3), value: isCurrent)
+                    .padding(.horizontal, 16)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation { showHint = false }
+                        audioManager.playTrack(at: index)
+                    }
                 }
-                .padding(.bottom, 20) // Push up from bottom edge
                 
-                }
-            .transition(.move(edge: .bottom))
+                Color.clear.frame(height: 100)
+            }
         }
-        
-    
+        // Force the list to take up all available space,
+        // ensuring the offset animation works correctly.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .mask(
+            LinearGradient(
+                gradient: Gradient(stops: [
+                    .init(color: .clear, location: 0.0),
+                    .init(color: .black, location: 0.05),
+                    .init(color: .black, location: 0.9),
+                    .init(color: .clear, location: 1.0)
+                ]),
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        // Note: .transition modifier REMOVED in favor of .offset in the main body
+    }
     
     var playingView: some View {
-            VStack(spacing: 0) { // Set spacing to 0 to control layout manually
-                
-                // --- TOP: Track Name (Left Aligned) ---
-                Text(audioManager.trackName)
-                    .font(.title2).fontWeight(.bold)
-                    .multilineTextAlignment(.leading)
-                
-                    .id(audioManager.trackName)
-                    .transition(.push(from: .bottom).combined(with: .opacity))
-                    .onLongPressGesture {
-                        renameText = audioManager.trackName
-                        showRenameAlert = true
-                    }
-                .padding(.horizontal)
-                .padding(.top, 20) // Add spacing below the image
-                
-                // --- MIDDLE: Spacer pushes name up and controls down ---
-                Spacer()
-                
-                // --- BOTTOM: Controls ---
-                VStack(spacing: 20) {
-                    
-                    if showHint {
-                        VStack(spacing: 5) {
-                            Text("Tap to Play • Swipe for Tracks")
-                                .font(.caption2)
-                                .foregroundColor(.gray)
-                                .padding(10)
-                            
-                            Image(systemName: "chevron.compact.up")
-                                .foregroundColor(.gray)
-                        }
-                        .padding(.bottom, 10)
-                        .transition(.opacity) // Fade out
-                    } else {
-                  
-                        Color.clear.frame(height: 20)
-                    }
-                    
-                    VStack(spacing: 5) {
-                        Slider(
-                            value: Binding(
-                                get: { audioManager.currentTime },
-                                set: { newValue in audioManager.seek(to: newValue) }
-                            ),
-                            in: 0...audioManager.duration,
-                            onEditingChanged: { isEditing in
-                                if isEditing {
-                                    withAnimation { showHint = false }
-                                    audioManager.startScrubbing()
-                                }
-                                else { audioManager.endScrubbing() }
-                            }
-                        )
-                        .tint(.primary)
-                        
-                        HStack {
-                            Text(audioManager.currentTime.formattedString())
-                            Spacer()
-                            Text(audioManager.duration.formattedString())
-                        }
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal)
-                    
-                    // Buttons
-                    HStack(spacing: 50) {
-                        
-                        // --- Button 1: Strategy ---
-                        Button(action: {
-                            audioManager.cyclePlayStrategy()
-                        }) {
-                            // Content (Icon)
-                            Image(systemName: audioManager.playStrategy == .shuffle ? "shuffle" : "repeat")
-                                .font(.title2)
-                                .foregroundColor(audioManager.playStrategy == .off ? .primary.opacity(0.1) : .primary)
-                            // 1. Frame to make a larger tappable area
-                                .frame(width: 60, height: 60)
-                            // 2. Glass effect applied to the content
-                                .glassEffect(.regular.interactive())
-                            // 3. Clip the final view into a circle
-                                .clipShape(Circle())
-                        }
-                        
-                        Spacer().frame(width: 64)
-                        
-                        // --- Button 2: Repeat One ---
-                        Button(action: { audioManager.isRepeatOne.toggle() }) {
-                            Image(systemName: "repeat.1")
-                                .font(.title2)
-                                .foregroundColor(audioManager.isRepeatOne ? .primary : .primary.opacity(0.1))
-                                .frame(width: 60, height: 60)
-                                .glassEffect(.regular.interactive())
-                                .clipShape(Circle())
-                        }
-                    }
-                    
-                    
-                  
-                }
-                .padding(.bottom, 20) // Add spacing from bottom of screen
+        VStack(spacing: 0) {
             
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .onTapGesture {
+            Text(audioManager.trackName)
+                .font(.title2).fontWeight(.bold)
+                .multilineTextAlignment(.leading)
+                .id(audioManager.trackName)
+                .transition(.push(from: .bottom).combined(with: .opacity))
+                .onLongPressGesture {
+                    renameText = audioManager.trackName
+                    showRenameAlert = true
+                }
+                .padding(.horizontal)
+                .padding(.top, 20)
+            
+            Spacer()
+            
+            VStack(spacing: 20) {
+                if showHint {
+                    VStack(spacing: 5) {
+                        Text("Tap to Play • Swipe for Tracks")
+                            .font(.caption2)
+                            .foregroundColor(.gray)
+                            .padding(10)
+                        
+                        Image(systemName: "chevron.compact.up")
+                            .foregroundColor(.gray)
+                    }
+                    .padding(.bottom, 10)
+                    .transition(.opacity)
+                } else {
+                    Color.clear.frame(height: 20)
+                }
                 
-                withAnimation { showHint = false }
-                audioManager.togglePlayPause()
+                VStack(spacing: 5) {
+                    Slider(
+                        value: Binding(
+                            get: { audioManager.currentTime },
+                            set: { newValue in audioManager.seek(to: newValue) }
+                        ),
+                        in: 0...audioManager.duration,
+                        onEditingChanged: { isEditing in
+                            if isEditing {
+                                withAnimation { showHint = false }
+                                audioManager.startScrubbing()
+                            }
+                            else { audioManager.endScrubbing() }
+                        }
+                    )
+                    .tint(.primary)
+                    
+                    HStack {
+                        Text(audioManager.currentTime.formattedString())
+                        Spacer()
+                        Text(audioManager.duration.formattedString())
+                    }
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundColor(.secondary)
+                }
+                .padding(.horizontal)
+                
+                Color.clear.frame(height: 80)
             }
-            .transition(.opacity)
+            .padding(.bottom, 20)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation { showHint = false }
+            audioManager.togglePlayPause()
+        }
+        // Note: Transition removed here, handled in Parent ZStack
     }
     
     // MARK: - Helpers
@@ -372,9 +350,7 @@ struct ContentView: View {
     func dragGesture(geo: GeometryProxy) -> some Gesture {
         DragGesture()
             .onChanged { value in
-                
                 if showHint { withAnimation { showHint = false } }
-                
                 if abs(value.translation.width) > abs(value.translation.height) {
                     dragOffset = value.translation.width
                 }
@@ -397,7 +373,6 @@ struct ContentView: View {
                 // Horizontal (Swipe)
                 let screenWidth = geo.size.width
                 
-                // Next
                 if horizontalAmount < -100 {
                     if audioManager.getNextTrackIndex() != nil {
                         withAnimation(.easeOut(duration: 0.2)) { dragOffset = -screenWidth }
@@ -409,9 +384,7 @@ struct ContentView: View {
                     } else {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { dragOffset = 0 }
                     }
-                }
-                // Prev
-                else if horizontalAmount > 100 {
+                } else if horizontalAmount > 100 {
                     if audioManager.getPreviousTrackIndex() != nil {
                         withAnimation(.easeOut(duration: 0.2)) { dragOffset = screenWidth }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -465,13 +438,11 @@ struct ContentView: View {
     }
     
     func updateNeighborImages(currentIndex: Int?) {
-        
         if let nextIdx = audioManager.getNextTrackIndex() {
             nextImage = audioManager.getImage(at: nextIdx)
         } else {
             nextImage = nil
         }
-        
         if let prevIdx = audioManager.getPreviousTrackIndex() {
             prevImage = audioManager.getImage(at: prevIdx)
         } else {
@@ -480,7 +451,6 @@ struct ContentView: View {
     }
 }
 
-// --- IMAGE CROPPER ---
 struct ImageCropper: View {
     var image: UIImage
     var onCrop: (UIImage) -> Void
