@@ -154,59 +154,102 @@ struct ContentView: View {
     }
     
     var listView: some View {
-        VStack {
-            List {
-                ForEach(audioManager.audioFiles.indices, id: \.self) { index in
-                    let url = audioManager.audioFiles[index]
-                    HStack {
-                        Text(audioManager.getDisplayName(for: url))
-                            .fontWeight(audioManager.currentTrackIndex == index ? .black : .regular)
-                            .foregroundColor(audioManager.currentTrackIndex == index ? .primary.opacity(0.4) : .primary)
-                    }
-                    .contentShape(Rectangle())
-            
-                    .onTapGesture {
-                        withAnimation { showHint = false }
-                        audioManager.playTrack(at: index)
-                    }
-                }
-            }
-            .listStyle(.plain)
-            
-            HStack (spacing: 50) {
-                Button(action: { withAnimation(.spring()) { isListVisible = false } }) {
-                    Image(systemName: "chevron.down")
-                        .font(.title2)
-                        .foregroundColor(.primary)
-                        .frame(width: 60, height: 60)
-                    // 2. Glass effect applied to the content
-                        .glassEffect(.regular.interactive())
-                    // 3. Clip the final view into a circle
-                        .clipShape(Circle())
-                }
-                .glassEffect(.regular.interactive())
-                Spacer().frame(width: 64)
-
-                Button(action: { showFileImporter = true }) {
-                    Image(systemName: "plus")
-                        .font(.title2)
-                        .foregroundColor(.primary)
-                        .frame(width: 60, height: 60)
-                    // 2. Glass effect applied to the content
-                        .glassEffect(.regular.interactive())
-                    // 3. Clip the final view into a circle
-                        .clipShape(Circle())
-                }
+            ZStack(alignment: .bottom) {
                 
-                .glassEffect(.regular.interactive())
+                // MARK: - Scrollable Stack
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(spacing: 6) { // Adjust spacing between "notifications" here
+                        
+                        // Add some padding at the top so the first item doesn't start instantly at the cut-off
+                        Color.clear.frame(height: 20)
+                        
+                        ForEach(audioManager.audioFiles.indices, id: \.self) { index in
+                            let url = audioManager.audioFiles[index]
+                            let isCurrent = audioManager.currentTrackIndex == index
+                            
+                            HStack {
+                                Text(audioManager.getDisplayName(for: url))
+                                    .fontWeight(isCurrent ? .bold : .regular)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                
+                                Spacer()
+                            }
+                            .padding(.vertical, 12) // Slightly taller for "notification" feel
+                            .padding(.horizontal, 16)
+                            
+                            // 1. Dynamic Styling
+                            .background(isCurrent ? Color.primary : Color(UIColor.secondarySystemBackground))
+                            .cornerRadius(20)
+                            .foregroundColor(isCurrent ? Color(UIColor.systemBackground) : .primary)
+                            
+                            // 2. Smooth Transition
+                            .animation(.easeInOut(duration: 0.3), value: isCurrent)
+                            
+                            // 3. Side Padding (Makes them look like floating cards)
+                            .padding(.horizontal, 16)
+                            
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation { showHint = false }
+                                audioManager.playTrack(at: index)
+                            }
+                        }
+                        
+                        // Add padding at bottom so last item isn't covered by buttons
+                        Color.clear.frame(height: 100)
+                    }
+                }
+                // MARK: - The Fade Mask
+                // This creates the soft edges at top and bottom
+//                .mask(
+//                    LinearGradient(
+//                        gradient: Gradient(stops: [
+//                            .init(color: .clear, location: 0.0),    // Top Edge: Transparent
+//                            .init(color: .black, location: 0.05),   // Start showing content quickly
+//                            .init(color: .black, location: 0.9),    // Keep showing content until near bottom
+//                            .init(color: .clear, location: 1.0)     // Bottom Edge: Transparent
+//                        ]),
+//                        startPoint: .top,
+//                        endPoint: .bottom
+//                    )
+//                )
+                
+                // MARK: - Bottom Controls (Floating)
+                // We use an overlay or ZStack, but since this is a VStack, we put it here
+                // We use negative padding or ignore layout to make it sit 'over' the fading list if desired,
+                // but keeping it separate is cleaner for interaction.
+                
+                HStack (spacing: 50) {
+                    Button(action: { withAnimation(.spring()) { isListVisible = false } }) {
+                        Image(systemName: "chevron.down")
+                            .font(.title2)
+                            .foregroundColor(.primary)
+                            .frame(width: 60, height: 60)
+                            .glassEffect(.regular.interactive())
+                            .clipShape(Circle())
+                    }
+                    .glassEffect(.regular.interactive())
+                    
+                    Spacer().frame(width: 64)
 
-            }
-            .padding()
-      
-//            .background(Color(UIColor.secondarySystemBackground))
+                    Button(action: { showFileImporter = true }) {
+                        Image(systemName: "plus")
+                            .font(.title2)
+                            .foregroundColor(.primary)
+                            .frame(width: 60, height: 60)
+                            .glassEffect(.regular.interactive())
+                            .clipShape(Circle())
+                    }
+                    .glassEffect(.regular.interactive())
+                }
+                .padding(.bottom, 20) // Push up from bottom edge
+                
+                }
+            .transition(.move(edge: .bottom))
         }
-        .transition(.move(edge: .bottom))
-    }
+        
+    
     
     var playingView: some View {
             VStack(spacing: 0) { // Set spacing to 0 to control layout manually
@@ -307,6 +350,7 @@ struct ContentView: View {
                                 .clipShape(Circle())
                         }
                     }
+                    
                     
                   
                 }
