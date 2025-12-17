@@ -112,13 +112,8 @@ struct ContentView: View {
         ZStack {
             Color(UIColor.systemBackground).ignoresSafeArea()
             VStack(spacing: 20) {
-                Image(systemName: "waveform.circle")
-                    .font(.system(size: 80))
-                    .foregroundStyle(.tertiary)
-                Text("Click to Import")
-                    .font(.title2)
-                    .fontWeight(.medium)
-                    .foregroundColor(.secondary)
+                Text("Tap to Import")
+                    .foregroundColor(.primary)
             }
         }
         .contentShape(Rectangle())
@@ -712,7 +707,6 @@ struct ImageCropper: View {
     @Environment(\.dismiss) var dismiss
     @Environment(\.displayScale) var displayScale
     @Environment(\.colorScheme) var colorScheme
-
     
     // State variables
     @State private var scale: CGFloat = 1.0
@@ -721,9 +715,20 @@ struct ImageCropper: View {
     @State private var lastOffset: CGSize = .zero
     
     let cropSize: CGFloat = 300
+    
+    // 👇 NEW: Calculate the actual size of the image when 'scaledToFill' fits it into the box.
+    // This accounts for aspect ratio (Portrait/Landscape) so we know how much we can drag.
+    var imageSizeInFrame: CGSize {
+        let widthRatio = cropSize / image.size.width
+        let heightRatio = cropSize / image.size.height
+        
+        // scaledToFill uses the larger ratio to ensure the crop box is completely covered
+        let ratio = max(widthRatio, heightRatio)
+        
+        return CGSize(width: image.size.width * ratio, height: image.size.height * ratio)
+    }
 
     var body: some View {
-        // Use ZStack alignment .bottom to match ContentView layout strategy
         ZStack(alignment: .bottom) {
             
             // 1. Background
@@ -741,84 +746,106 @@ struct ImageCropper: View {
                         .frame(width: cropSize, height: cropSize)
                         .scaleEffect(scale)
                         .offset(offset)
+                        // 👇 GESTURES
                         .gesture(
                             DragGesture()
                                 .onChanged { v in
                                     let tempWidth = lastOffset.width + v.translation.width
                                     let tempHeight = lastOffset.height + v.translation.height
-                                    let rangeX = (cropSize * scale - cropSize) / 2
-                                    let rangeY = (cropSize * scale - cropSize) / 2
-                                    let clampedX = min(rangeX, max(-rangeX, tempWidth))
-                                    let clampedY = min(rangeY, max(-rangeY, tempHeight))
+                                    
+                                    // 1. Calculate actual current size of the image
+                                    let currentWidth = imageSizeInFrame.width * scale
+                                    let currentHeight = imageSizeInFrame.height * scale
+                                    
+                                    // 2. Calculate how much "overhang" exists (divided by 2 because it's centered)
+                                    // This allows dragging even at scale 1.0 if the image is rectangular
+                                    let rangeX = (currentWidth - cropSize) / 2
+                                    let rangeY = (currentHeight - cropSize) / 2
+                                    
+                                    // 3. Clamp the drag so we don't see black bars
+                                    // If range is positive (overhang), allow drag. If negative or zero, lock to 0.
+                                    let clampedX = rangeX > 0 ? min(rangeX, max(-rangeX, tempWidth)) : 0
+                                    let clampedY = rangeY > 0 ? min(rangeY, max(-rangeY, tempHeight)) : 0
+                                    
                                     offset = CGSize(width: clampedX, height: clampedY)
                                 }
                                 .onEnded { _ in lastOffset = offset }
-                        )
-                        .gesture(
-                            MagnificationGesture()
-                                .onChanged { v in
-                                    let newScale = lastScale * v
-                                    scale = newScale >= 1.0 ? newScale : 1.0
-                                    let rangeX = (cropSize * scale - cropSize) / 2
-                                    let rangeY = (cropSize * scale - cropSize) / 2
-                                    let clampedX = min(rangeX, max(-rangeX, offset.width))
-                                    let clampedY = min(rangeY, max(-rangeY, offset.height))
-                                    offset = CGSize(width: clampedX, height: clampedY)
-                                }
-                                .onEnded { _ in
-                                    lastScale = scale
-                                    lastOffset = offset
-                                }
+                                // Combine with Zoom
+                                .simultaneously(with: MagnificationGesture()
+                                    .onChanged { v in
+                                        let newScale = lastScale * v
+                                        scale = newScale >= 1.0 ? newScale : 1.0
+                                        
+                                        // Recalculate bounds while zooming out to ensure image snaps back if needed
+                                        let currentWidth = imageSizeInFrame.width * scale
+                                        let currentHeight = imageSizeInFrame.height * scale
+                                        
+                                        let rangeX = (currentWidth - cropSize) / 2
+                                        let rangeY = (currentHeight - cropSize) / 2
+                                        
+                                        let clampedX = rangeX > 0 ? min(rangeX, max(-rangeX, offset.width)) : 0
+                                        let clampedY = rangeY > 0 ? min(rangeY, max(-rangeY, offset.height)) : 0
+                                        
+                                        offset = CGSize(width: clampedX, height: clampedY)
+                                    }
+                                    .onEnded { _ in
+                                        lastScale = scale
+                                        lastOffset = offset
+                                    }
+                                )
                         )
                     
+                    // White Border
                     Rectangle()
-                        .stroke(Color.white, lineWidth: 2)
+                        .stroke(Color.primary, lineWidth: 2)
                         .frame(width: cropSize, height: cropSize)
                         .allowsHitTesting(false)
                 }
                 .mask(Rectangle().frame(width: cropSize, height: cropSize))
+                // Ensure the gesture area catches touches
+                .contentShape(Rectangle())
                 
                 Spacer()
                 
-                // Instructions (Pushed up slightly to avoid buttons)
                 Text("Pinch to Zoom • Drag to Move")
-                    .foregroundColor(.gray)
+                    .foregroundColor(.secondary)
                     .font(.caption)
-                    .padding(.bottom, 120) // Push text up so it doesn't overlap buttons
+                    .padding(.bottom, 120)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             
-            // 3. Floating Buttons (Exact Layout Match)
+            // 3. Floating Buttons
             HStack(spacing: 50) {
                 
-                // Cancel Button (Left)
+                // Cancel
                 Button(action: { dismiss() }) {
                     Image(systemName: "xmark")
+                        .font(.title2)
+                        .fontWeight(.bold)
                         .foregroundColor(.primary)
                         .frame(width: 60, height: 60)
-                        // Use ultraThinMaterial to mimic the glass effect on black background
                         .glassEffect(.regular.interactive())
                         .clipShape(Circle())
                         .contentTransition(.symbolEffect(.replace))
-
                 }
+                .glassEffect(.regular.interactive())
                 
-                // Exact Spacer Match
                 Spacer().frame(width: 64)
                 
-                // Done Button (Right)
+                // Done
                 Button(action: { cropImage() }) {
                     Image(systemName: "checkmark")
                         .font(.title2)
+                        .fontWeight(.bold)
                         .foregroundColor(.primary)
                         .frame(width: 60, height: 60)
                         .glassEffect(.regular.interactive())
                         .clipShape(Circle())
                         .contentTransition(.symbolEffect(.replace))
-
                 }
+                .glassEffect(.regular.interactive())
             }
-            .padding(.bottom, 20) // Exact padding match
+            .padding(.bottom, 20)
         }
         .id(colorScheme)
         .statusBarHidden()
