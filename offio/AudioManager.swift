@@ -36,6 +36,8 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
         didSet {
             // Save state whenever it changes
             UserDefaults.standard.set(playStrategy.rawValue, forKey: "PlayStrategy")
+            // Update buttons immediately when strategy changes
+            updateCommandAvailability()
         }
     }
     var isRepeatOne: Bool = false {
@@ -188,7 +190,6 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
         let commandCenter = MPRemoteCommandCenter.shared()
         
         // 1. CLEAR EVERYTHING FIRST
-        // This ensures if the app effectively restarts, we don't have stale targets.
         commandCenter.playCommand.removeTarget(nil)
         commandCenter.pauseCommand.removeTarget(nil)
         commandCenter.togglePlayPauseCommand.removeTarget(nil)
@@ -200,13 +201,11 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
         commandCenter.pauseCommand.isEnabled = true
         commandCenter.pauseCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
-            
-            // Explicitly run on Main Thread
             DispatchQueue.main.async {
                 self.player?.pause()
                 self.isPlaying = false
                 self.timer?.invalidate()
-                self.updateNowPlayingInfo() // Force UI update
+                self.updateNowPlayingInfo()
             }
             return .success
         }
@@ -215,11 +214,8 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
         commandCenter.playCommand.isEnabled = true
         commandCenter.playCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
-            
             DispatchQueue.main.async {
-                // Only play if player exists. Do NOT create a new player here.
                 if let player = self.player {
-                    // Ensure session is active before playing
                     try? AVAudioSession.sharedInstance().setActive(true)
                     player.play()
                     self.isPlaying = true
@@ -230,18 +226,16 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
             return .success
         }
         
-        // 4. TOGGLE (Headphones/Earbuds)
+        // 4. TOGGLE
         commandCenter.togglePlayPauseCommand.isEnabled = true
         commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
-            
-            DispatchQueue.main.async {
-                self.togglePlayPause() // Reuse your existing logic
-            }
+            DispatchQueue.main.async { self.togglePlayPause() }
             return .success
         }
         
         // 5. NEXT
+        // Note: isEnabled state is now managed dynamically in updateCommandAvailability()
         commandCenter.nextTrackCommand.isEnabled = true
         commandCenter.nextTrackCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
@@ -250,6 +244,7 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
         }
         
         // 6. PREVIOUS
+        // Note: isEnabled state is now managed dynamically in updateCommandAvailability()
         commandCenter.previousTrackCommand.isEnabled = true
         commandCenter.previousTrackCommand.addTarget { [weak self] _ in
             guard let self = self else { return .commandFailed }
@@ -261,7 +256,6 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
         commandCenter.changePlaybackPositionCommand.isEnabled = true
         commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let self = self, let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            
             DispatchQueue.main.async {
                 self.player?.currentTime = event.positionTime
                 self.currentTime = event.positionTime
@@ -270,10 +264,34 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
             return .success
         }
         
-        // 8. IMPORTANT: Set the app strictly to receive remote events
         UIApplication.shared.beginReceivingRemoteControlEvents()
     }
     
+    // MARK: - Dynamic Button Logic
+    func updateCommandAvailability() {
+        let center = MPRemoteCommandCenter.shared()
+        
+        // Safety check: if no audio is loaded, disable both
+        guard let index = currentTrackIndex, !audioFiles.isEmpty else {
+            center.nextTrackCommand.isEnabled = false
+            center.previousTrackCommand.isEnabled = false
+            return
+        }
+        
+        if playStrategy == .off {
+            // Repeat OFF logic:
+            // Disable Previous if we are at the very first track (index 0)
+            center.previousTrackCommand.isEnabled = (index > 0)
+            
+            // Disable Next if we are at the very last track
+            center.nextTrackCommand.isEnabled = (index < audioFiles.count - 1)
+        } else {
+            // Repeat ALL or Shuffle logic:
+            // Always enabled because the list wraps around
+            center.previousTrackCommand.isEnabled = true
+            center.nextTrackCommand.isEnabled = true
+        }
+    }
     
     
     func playFromRemote() {
@@ -299,14 +317,13 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
         updateNowPlayingInfo()
     }
     
-    
-    
     func cyclePlayStrategy() {
         switch playStrategy {
         case .off: playStrategy = .shuffle; generateShuffleList()
         case .shuffle: playStrategy = .all
         case .all: playStrategy = .off
         }
+        // Note: The didSet observer on `playStrategy` will call updateCommandAvailability() automatically
     }
     
     func generateShuffleList() {
@@ -406,6 +423,8 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
     func updateNowPlayingInfo() {
         guard let player = player else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            // If player is nil, disable controls
+            updateCommandAvailability()
             return
         }
 
@@ -426,10 +445,12 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
         nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player.currentTime
         
         // Rate (1.0 = Playing, 0.0 = Paused)
-        // This tells the iPhone to show the Pause bars vs the Play triangle
         nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
         
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+        
+        // 👇 Update the button states (Enable/Disable Next/Prev)
+        updateCommandAvailability()
     }
     
     func importFile(from url: URL) {
@@ -483,6 +504,9 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
                 currentTrackIndex = nil
             }
         }
+        
+        // Update buttons (e.g., if we were at end of list, importing a file might enable "Next")
+        updateCommandAvailability()
     }
     
     func restoreLastPlayedTrack() {
