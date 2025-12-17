@@ -65,142 +65,165 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
     }
     
     // MARK: - File Management
-    
-    func deleteTrack(at index: Int) {
-        guard audioFiles.indices.contains(index) else { return }
-        let url = audioFiles[index]
-        var nextTrackUrlToFocus: URL? = nil
-        
-        // 1. IF DELETING CURRENT TRACK: Determine what to focus next
-        if currentTrackIndex == index {
-            
-            // Try to find the next track based on current strategy (Shuffle/Repeat)
-            if let nextIndex = getNextTrackIndex() {
-                nextTrackUrlToFocus = audioFiles[nextIndex]
-            }
-            // If next is nil (e.g. End of list + Repeat Off), try Previous
-            else if let prevIndex = getPreviousTrackIndex() {
-                nextTrackUrlToFocus = audioFiles[prevIndex]
-            }
-            
-            // Stop current playback
-            player?.stop()
-            player = nil
-            isPlaying = false
-            timer?.invalidate()
-            
-            // Clear metadata temporarily
-            trackName = "No Audio Selected"
-            trackImage = nil
-            currentTime = 0
-            duration = 0
-            currentTrackIndex = nil
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-        }
-        
-        // 2. Delete File from Disk
-        do {
-            try FileManager.default.removeItem(at: url)
-            let artUrl = url.appendingPathExtension("jpg")
-            if FileManager.default.fileExists(atPath: artUrl.path) {
-                try? FileManager.default.removeItem(at: artUrl)
-            }
-            
-            let filename = url.lastPathComponent
-            if customNames[filename] != nil {
-                customNames.removeValue(forKey: filename)
-                UserDefaults.standard.set(customNames, forKey: "CustomTrackNames")
-            }
-            
-            // 3. HANDLE SHUFFLE QUEUE UPDATE
-            if !shuffledIndices.isEmpty {
-                if let indexInShuffle = shuffledIndices.firstIndex(of: index) {
-                    shuffledIndices.remove(at: indexInShuffle)
-                }
-                for i in 0..<shuffledIndices.count {
-                    if shuffledIndices[i] > index {
-                        shuffledIndices[i] -= 1
-                    }
-                }
-            }
-            
-            // 4. Handle Index Shift (for normal logic)
-            if let current = currentTrackIndex, index < current {
-                currentTrackIndex = current - 1
-            }
-            
-            // 5. Reload List
-            loadFilesFromDocumentDirectory()
-            
-            if playStrategy == .shuffle && shuffledIndices.isEmpty && !audioFiles.isEmpty {
-                generateShuffleList()
-            }
-            
-            // 6. RE-FOCUS LOGIC
-            // If we have a target URL (from Step 1), find its new index and prepare it
-            if let targetUrl = nextTrackUrlToFocus, let newIndex = audioFiles.firstIndex(of: targetUrl) {
-                preparePlayer(at: newIndex)
-            } else if currentTrackIndex == nil && !audioFiles.isEmpty {
-                // Fallback: If logic failed but we still have files, focus the first one
-                preparePlayer(at: 0)
-            } else {
-                 updateCommandAvailability()
-            }
-            
-        } catch {
-            print("Error deleting file: \(error)")
-        }
-    }
+    func deleteTrack(url: URL) {
+           // 1. Validate existence and get fresh index
+           // We calculate the index right now to ensure it's accurate even during batch deletes
+           guard let index = audioFiles.firstIndex(of: url) else { return }
+           
+           print("Deleting track at index \(index): \(url.lastPathComponent)")
+           var nextTrackUrlToFocus: URL? = nil
+           
+           // 2. IF DELETING CURRENT TRACK: Determine what to focus next
+           if currentTrackIndex == index {
+               
+               // Try to find the next track based on current strategy
+               if let nextIndex = getNextTrackIndex() {
+                   nextTrackUrlToFocus = audioFiles[nextIndex]
+               } else if let prevIndex = getPreviousTrackIndex() {
+                   nextTrackUrlToFocus = audioFiles[prevIndex]
+               }
+               
+               // Stop current playback immediately
+               player?.stop()
+               player = nil
+               isPlaying = false
+               timer?.invalidate()
+               
+               // Clear metadata temporarily
+               trackName = "No Audio Selected"
+               trackImage = nil
+               currentTime = 0
+               duration = 0
+               currentTrackIndex = nil // Set to nil so loadFiles doesn't try to restore it
+               MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+           }
+           
+           // 3. Delete File from Disk
+           do {
+               try FileManager.default.removeItem(at: url)
+               
+               // Remove Artwork if exists
+               let artUrl = url.appendingPathExtension("jpg")
+               if FileManager.default.fileExists(atPath: artUrl.path) {
+                   try? FileManager.default.removeItem(at: artUrl)
+               }
+               
+               // Remove from Custom Names
+               let filename = url.lastPathComponent
+               if customNames[filename] != nil {
+                   customNames.removeValue(forKey: filename)
+                   UserDefaults.standard.set(customNames, forKey: "CustomTrackNames")
+               }
+               
+               // 4. HANDLE SHUFFLE QUEUE UPDATE
+               // We must remove the deleted index and shift down any larger indices
+               if !shuffledIndices.isEmpty {
+                   if let indexInShuffle = shuffledIndices.firstIndex(of: index) {
+                       shuffledIndices.remove(at: indexInShuffle)
+                   }
+                   for i in 0..<shuffledIndices.count {
+                       if shuffledIndices[i] > index {
+                           shuffledIndices[i] -= 1
+                       }
+                   }
+               }
+               
+               // 5. Reload List
+               // This refreshes audioFiles. Because we handled shuffle indices and cleared currentTrackIndex (if playing),
+               // this is safe.
+               loadFilesFromDocumentDirectory()
+               
+               // 6. Shuffle Safety Check
+               if playStrategy == .shuffle && shuffledIndices.isEmpty && !audioFiles.isEmpty {
+                   generateShuffleList()
+               }
+               
+               // 7. RE-FOCUS LOGIC
+               // If we deleted the playing track, load the next one (paused)
+               if let targetUrl = nextTrackUrlToFocus, let newIndex = audioFiles.firstIndex(of: targetUrl) {
+                   preparePlayer(at: newIndex)
+               }
+               // If we deleted the last file and nothing is left, update UI
+               else if currentTrackIndex == nil && !audioFiles.isEmpty {
+                   preparePlayer(at: 0) // Default to first track
+               } else {
+                   updateCommandAvailability()
+               }
+               
+           } catch {
+               print("Error deleting file: \(error)")
+           }
+       }
+    func deleteTracks(urls: Set<URL>) {
+           // We sort them to delete from end to start if we were using indices,
+           // but since we use URLs, order doesn't strictly matter for safety,
+           // though it helps to do it sequentially.
+           for url in urls {
+               deleteTrack(url: url)
+           }
+       }
     
     func renameTrack(at index: Int, to userTypedName: String) {
-        guard audioFiles.indices.contains(index) else { return }
-        guard !userTypedName.isEmpty else { return }
-        
-        let currentUrl = audioFiles[index]
-        let fileExtension = currentUrl.pathExtension
-        let oldFilename = currentUrl.lastPathComponent
-        
-        var cleanName = userTypedName
-        if cleanName.hasSuffix("." + fileExtension) {
-            cleanName = String(cleanName.dropLast(fileExtension.count + 1))
+            guard audioFiles.indices.contains(index) else { return }
+            guard !userTypedName.isEmpty else { return }
+            
+            let currentUrl = audioFiles[index]
+            let fileExtension = currentUrl.pathExtension
+            let oldFilename = currentUrl.lastPathComponent
+            
+            // 1. CHECK IF THIS IS THE PLAYING TRACK *BEFORE* CHANGES
+            // We need to know this now, because 'currentTrackIndex' might get reset
+            // during the reload process since the URL is changing.
+            let isRenamingPlayingTrack = (currentTrackIndex == index)
+            
+            var cleanName = userTypedName
+            if cleanName.hasSuffix("." + fileExtension) {
+                cleanName = String(cleanName.dropLast(fileExtension.count + 1))
+            }
+            
+            let newPhysicalName = cleanName + "." + fileExtension
+            let directory = currentUrl.deletingLastPathComponent()
+            let newUrl = directory.appendingPathComponent(newPhysicalName)
+            
+            do {
+                let fileManager = FileManager.default
+                
+                if currentUrl != newUrl {
+                    try fileManager.moveItem(at: currentUrl, to: newUrl)
+                    let oldArt = currentUrl.appendingPathExtension("jpg")
+                    let newArt = newUrl.appendingPathExtension("jpg")
+                    if fileManager.fileExists(atPath: oldArt.path) {
+                        try? fileManager.moveItem(at: oldArt, to: newArt)
+                    }
+                }
+                
+                customNames.removeValue(forKey: oldFilename)
+                customNames[newPhysicalName] = userTypedName
+                UserDefaults.standard.set(customNames, forKey: "CustomTrackNames")
+                
+                // 2. RELOAD FILES
+                // This will likely set 'currentTrackIndex' to nil temporarily because
+                // the old URL is gone.
+                loadFilesFromDocumentDirectory()
+                
+                // 3. RESTORE STATE
+                if let newIndex = audioFiles.firstIndex(of: newUrl) {
+                    
+                    // If we were playing the track that got renamed:
+                    if isRenamingPlayingTrack {
+                        // Update index to the new file position
+                        currentTrackIndex = newIndex
+                        // Update the Display Name (Triggers the View Update)
+                        trackName = getDisplayName(for: newUrl)
+                        
+                        UserDefaults.standard.set(newUrl.lastPathComponent, forKey: "LastPlayedTrack")
+                        updateNowPlayingInfo()
+                    }
+                    
+                    if playStrategy == .shuffle { generateShuffleList() }
+                }
+            } catch { print("Error renaming: \(error)") }
         }
-        
-        let newPhysicalName = cleanName + "." + fileExtension
-        let directory = currentUrl.deletingLastPathComponent()
-        let newUrl = directory.appendingPathComponent(newPhysicalName)
-        
-        do {
-            let fileManager = FileManager.default
-            
-            if currentUrl != newUrl {
-                try fileManager.moveItem(at: currentUrl, to: newUrl)
-                let oldArt = currentUrl.appendingPathExtension("jpg")
-                let newArt = newUrl.appendingPathExtension("jpg")
-                if fileManager.fileExists(atPath: oldArt.path) {
-                    try? fileManager.moveItem(at: oldArt, to: newArt)
-                }
-            }
-            
-            customNames.removeValue(forKey: oldFilename)
-            customNames[newPhysicalName] = userTypedName
-            UserDefaults.standard.set(customNames, forKey: "CustomTrackNames")
-            
-            // Reload to reflect changes
-            loadFilesFromDocumentDirectory()
-            
-            // If we renamed the currently playing track, update the UI
-            if let newIndex = audioFiles.firstIndex(of: newUrl) {
-                if currentTrackIndex == index {
-                    currentTrackIndex = newIndex
-                    trackName = getDisplayName(for: newUrl)
-                    UserDefaults.standard.set(newUrl.lastPathComponent, forKey: "LastPlayedTrack")
-                    updateNowPlayingInfo()
-                }
-                if playStrategy == .shuffle { generateShuffleList() }
-            }
-        } catch { print("Error renaming: \(error)") }
-    }
-    
     // MARK: - State Persistence & Helpers
     
     func loadCustomNames() {
@@ -493,11 +516,11 @@ class AudioManager: NSObject, AVAudioPlayerDelegate {
             if currentlyPlayingURL != nil {
                 currentTrackIndex = nil
             } else if currentTrackIndex == nil && !audioFiles.isEmpty {
-                // 👇 NEW LOGIC: If no track was playing (nil), but we now have files (first import),
-                // Focus the first track (index 0) so user can just hit play.
+              
                 preparePlayer(at: 0)
             }
         }
+        print("update current track to: \(String(describing: currentTrackIndex?.description ?? "nil"))")
         updateCommandAvailability()
     }
     
