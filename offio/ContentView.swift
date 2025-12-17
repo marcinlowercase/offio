@@ -31,6 +31,7 @@ struct ContentView: View {
     
     // --- HINT STATE ---
     @State private var showHint = true
+
     
     // Animation States
     @State private var dragOffset: CGFloat = 0
@@ -237,9 +238,11 @@ struct ContentView: View {
                     }
                     .padding(.vertical, 12)
                     .padding(.horizontal, 16)
-                    .background(isCurrent ? Color.primary : Color(UIColor.secondarySystemBackground))
+             
+                    
+                    .glassEffect(isCurrent ? .regular : .clear)
                     .cornerRadius(20)
-                    .foregroundColor(isCurrent ? Color(UIColor.systemBackground) : .primary)
+                    .foregroundColor(isCurrent ? .primary : .primary.opacity(0.2))
                     .animation(.easeInOut(duration: 0.3), value: isCurrent)
                     .padding(.horizontal, 16)
                     .contentShape(Rectangle())
@@ -348,58 +351,84 @@ struct ContentView: View {
     // MARK: - Helpers
     
     func dragGesture(geo: GeometryProxy) -> some Gesture {
-        DragGesture()
-            .onChanged { value in
-                if showHint { withAnimation { showHint = false } }
-                if abs(value.translation.width) > abs(value.translation.height) {
-                    dragOffset = value.translation.width
-                }
-            }
-            .onEnded { value in
-                let horizontalAmount = value.translation.width
-                let verticalAmount = value.translation.height
-                
-                // Vertical (List)
-                if abs(verticalAmount) > abs(horizontalAmount) {
-                    if verticalAmount < -50 && !isListVisible {
-                        withAnimation(.spring()) { isListVisible = true }
-                    } else if verticalAmount > 50 && isListVisible {
-                        withAnimation(.spring()) { isListVisible = false }
+            DragGesture()
+                .onChanged { value in
+                    if showHint { withAnimation { showHint = false } }
+                    
+                    // Only track horizontal offset for the carousel animation
+                    if abs(value.translation.width) > abs(value.translation.height) {
+                        dragOffset = value.translation.width
                     }
-                    withAnimation(.spring()) { dragOffset = 0 }
-                    return
                 }
-                
-                // Horizontal (Swipe)
-                let screenWidth = geo.size.width
-                
-                if horizontalAmount < -100 {
-                    if audioManager.getNextTrackIndex() != nil {
-                        withAnimation(.easeOut(duration: 0.2)) { dragOffset = -screenWidth }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                            audioManager.nextTrack()
-                            var t = Transaction(animation: nil); t.disablesAnimations = true
-                            withTransaction(t) { dragOffset = 0 }
+                .onEnded { value in
+                    let horizontalAmount = value.translation.width
+                    let verticalAmount = value.translation.height
+                    
+                    // MARK: - VERTICAL GESTURES
+                    if abs(verticalAmount) > abs(horizontalAmount) {
+                        
+                        // Threshold of 50px to trigger action
+                        if abs(verticalAmount) > 50 {
+                            
+                            if isListVisible {
+                                // Case 1: List is Open
+                                if verticalAmount > 0 {
+                                    // Swipe DOWN -> Close List
+                                    withAnimation(.spring()) { isListVisible = false }
+                                }
+                            } else {
+                                // Case 2: Playing View (List is Closed)
+                                if verticalAmount < 0 {
+                                    // Swipe UP -> Open List
+                                    withAnimation(.spring()) { isListVisible = true }
+                                } else {
+                                    // Swipe DOWN -> Restart Song (👇 NEW LOGIC)
+                                    audioManager.seek(to: 0)
+                                    
+                                    // Optional: Add Haptic Feedback so user feels the reset
+                                    let generator = UIImpactFeedbackGenerator(style: .medium)
+                                    generator.impactOccurred()
+                                }
+                            }
+                        }
+                        
+                        // Reset animation offset
+                        withAnimation(.spring()) { dragOffset = 0 }
+                        return
+                    }
+                    
+                    // MARK: - HORIZONTAL GESTURES (Carousel)
+                    let screenWidth = geo.size.width
+                    
+                    if horizontalAmount < -100 {
+                        // Next Track
+                        if audioManager.getNextTrackIndex() != nil {
+                            withAnimation(.easeOut(duration: 0.2)) { dragOffset = -screenWidth }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                audioManager.nextTrack()
+                                var t = Transaction(animation: nil); t.disablesAnimations = true
+                                withTransaction(t) { dragOffset = 0 }
+                            }
+                        } else {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { dragOffset = 0 }
+                        }
+                    } else if horizontalAmount > 100 {
+                        // Previous Track
+                        if audioManager.getPreviousTrackIndex() != nil {
+                            withAnimation(.easeOut(duration: 0.2)) { dragOffset = screenWidth }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                audioManager.previousTrack(force: true)
+                                var t = Transaction(animation: nil); t.disablesAnimations = true
+                                withTransaction(t) { dragOffset = 0 }
+                            }
+                        } else {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { dragOffset = 0 }
                         }
                     } else {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { dragOffset = 0 }
+                        withAnimation(.spring()) { dragOffset = 0 }
                     }
-                } else if horizontalAmount > 100 {
-                    if audioManager.getPreviousTrackIndex() != nil {
-                        withAnimation(.easeOut(duration: 0.2)) { dragOffset = screenWidth }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                            audioManager.previousTrack(force: true)
-                            var t = Transaction(animation: nil); t.disablesAnimations = true
-                            withTransaction(t) { dragOffset = 0 }
-                        }
-                    } else {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { dragOffset = 0 }
-                    }
-                } else {
-                    withAnimation(.spring()) { dragOffset = 0 }
                 }
-            }
-    }
+        }
     
     func handleImageSelection(_ newItem: PhotosPickerItem?) {
         guard let newItem else { return }
