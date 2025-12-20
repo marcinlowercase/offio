@@ -631,7 +631,12 @@ struct ContentView: View {
             } else {
                 Rectangle()
                     .fill(Color.primary.opacity(0.03))
-                    .overlay(Text(placeHolder).foregroundColor(.primary))
+                    .overlay(
+                        Text(placeHolder)
+                            .font(.caption2)
+                            .foregroundColor(.gray)
+                            .padding(10)
+                    )
             }
         }
         .frame(width: size, height: size)
